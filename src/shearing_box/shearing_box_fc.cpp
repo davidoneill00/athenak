@@ -64,14 +64,13 @@ TaskStatus ShearingBoxBoundaryFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
   const auto &x1bndry_mbgid_ = x1bndry_mbgid;
   auto &sbuf = sendbuf;
   int scr_lvl=0;
-  size_t scr_size = ScrArray1D<Real>::shmem_size(nj) * 3;
+  size_t scr_size = ScrArray1D<Real>::shmem_size(nj) * 2;
   for (int n=0; n<2; ++n) {
     int nmb1 = nmb_x1bndry(n) - 1;
     par_for_outer("shrcc",DevExeSpace(),scr_size,scr_lvl,0,nmb1,0,2,kl,ku,0,(ng-1),
     KOKKOS_LAMBDA(TeamMember_t member,const int m,const int v,const int k,const int i) {
       ScrArray1D<Real> a_(member.team_scratch(scr_lvl), nj); // 1D slice of data
       ScrArray1D<Real> flx(member.team_scratch(scr_lvl), nj); // "flux" at faces
-      ScrArray1D<Real> q1_(member.team_scratch(scr_lvl), nj); // scratch array
       int mm = x1bndry_mbgid_.d_view(n,m) - gids_;
 
       // Load scratch array
@@ -80,36 +79,31 @@ TaskStatus ShearingBoxBoundaryFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x1f(mm,k,j,i);
           });
-          member.team_barrier();
         } else if (v==1) {
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x2f(mm,k,j,i);
           });
-          member.team_barrier();
         } else if (v==2) {
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x3f(mm,k,j,i);
           });
-          member.team_barrier();
         }
       } else if (n==1) {
         if (v==0) {
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x1f(mm,k,j,(ie+2)+i);
           });
-          member.team_barrier();
         } else if (v==1) {
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x2f(mm,k,j,(ie+1)+i);
           });
-          member.team_barrier();
         } else if (v==2) {
           par_for_inner(member, 0, nj, [&](const int j) {
             a_(j) = b.x3f(mm,k,j,(ie+1)+i);
           });
-          member.team_barrier();
         }
       }
+      member.team_barrier();
 
       // compute fractional offset
       Real eps = fmod(yshear_,(mbsize.d_view(mm).dx2))/(mbsize.d_view(mm).dx2);
@@ -118,18 +112,20 @@ TaskStatus ShearingBoxBoundaryFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
       // Compute "fluxes" at shifted cell faces
       switch (rcon) {
         case ReconstructionMethod::dc:
-          DCRemapFlx(member, js, (je+1), eps, a_, q1_, flx);
+          DC_RemapFlx(member, js, (je+1), eps, a_, flx);
           break;
         case ReconstructionMethod::plm:
-          PLMRemapFlx(member, js, (je+1), eps, a_, q1_, flx);
+          PLM_RemapFlx(member, js, (je+1), eps, a_, flx);
           break;
-//      case ReconstructionMethod::ppm4:
-//      case ReconstructionMethod::ppmx:
-//          PPMRemapFlx(member,eos_,extrema,true,m,k,j,il,iu, w0_, wl_jp1, wr);
-//        break;
+        case ReconstructionMethod::ppm4:
+        case ReconstructionMethod::ppmx:
+        case ReconstructionMethod::wenoz:
+          PPMX_RemapFlx(member, js, (je+1), eps, a_, flx);
+          break;
         default:
           break;
       }
+      member.team_barrier();
 
       // update data in send buffer with fracational shift
       par_for_inner(member, js, je, [&](const int j) {

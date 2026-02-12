@@ -17,11 +17,14 @@
 #include "mesh/mesh.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "shearing_box.hpp"
+#include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "remap_fluxes.hpp"
 
 //----------------------------------------------------------------------------------------
 //! OrbitalAdvection base class constructor
+//! Called by Hydro and MHD constructors, so cannot access any data inside Hydro/MHD
+//! classes as it may not be properly allocated yet.
 
 OrbitalAdvection::OrbitalAdvection(MeshBlockPack *ppack, ParameterInput *pin) :
     maxjshift(1),

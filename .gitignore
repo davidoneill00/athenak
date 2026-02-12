@@ -16,3 +16,7 @@ build*/
 # editor temp files
 *~
 *.swp
+*__pycache__*
+
+# custom commands
+CheatSheet.txt
