@@ -365,6 +365,9 @@ void Driver::Execute(Mesh *pmesh, ParameterInput *pin, Outputs *pout) {
     std::cout << "\nSetup complete, executing task list(s)...\n" << std::endl;
   }
 
+  // Initialize prev_elapsed_ to current wall time to exclude setup time from timing
+  prev_elapsed_ = pwall_clock_->seconds();
+
   if (time_evolution == TimeEvolution::tstatic) {
     // TODO(@user): add work for time static problems here
   } else {
@@ -508,13 +511,20 @@ void Driver::Finalize(Mesh *pmesh, ParameterInput *pin, Outputs *pout) {
 //! \brief Simple function to print diagnostics every 'ndiag' cycles to stdout
 
 void Driver::OutputCycleDiagnostics(Mesh *pm) {
-//  const int dtprcsn = std::numeric_limits<Real>::max_digits10 - 1;
   const int dtprcsn = 6;
   if (pm->ncycle % ndiag == 0) {
-    Real elapsed = pwall_clock_->seconds();
+    Real elapsed  = pwall_clock_->seconds();
+    Real dt_wall  = elapsed - prev_elapsed_;  // Wall time for this step
+    prev_elapsed_ = elapsed;
+
+    std::uint64_t zones_this_step = static_cast<std::uint64_t>(pm->nmb_total) * static_cast<std::uint64_t>(pm->NumberOfMeshBlockCells());
+    float mzps = (dt_wall > 0.0) ? static_cast<float>(zones_this_step) / (dt_wall * 1.0e6) : 0.0;
     std::cout << "elapsed=" << std::scientific << std::setprecision(dtprcsn) << elapsed
-              << " cycle=" << pm->ncycle
-              << " time=" << pm->time << " dt=" << pm->dt << std::endl;
+              //<< " cycle=" << pm->ncycle
+              << " time=" << std::scientific << std::setprecision(dtprcsn) << pm->time
+              << " dt=" << std::scientific << std::setprecision(dtprcsn) << pm->dt
+              //<< " wall_dt=" << std::scientific << std::setprecision(dtprcsn) << dt_wall
+              << " Mzps=" << std::fixed << std::setprecision(2) << mzps << std::endl;
   }
   return;
 }

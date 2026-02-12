@@ -61,5 +61,6 @@ class Driver {
   float lb_efficiency_;         // measure of how efficient was load balancing
   void OutputCycleDiagnostics(Mesh *pm);
   Real UpdateWallClock();
+  Real prev_elapsed_ = 0.0;
 };
 #endif // DRIVER_DRIVER_HPP_
