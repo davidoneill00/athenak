@@ -53,6 +53,7 @@ namespace {
   Real g_floor_density;
   Real g_floor_pressure;
   bool g_sources_enabled;
+  Real g_G = 1.0;
 }
 
 
@@ -95,25 +96,22 @@ public:
   // Test particle orbital frequency 
   KOKKOS_INLINE_FUNCTION
   Real Omega(Real x, Real y, Real z, Kokkos::Array<Kokkos::Array<Real, 3>, 2> binary_position) const {
-    Real G          = 1.0; // Gravitational constant in code units
     Kokkos::Array<Real, 3> r1_vec = {x -  binary_position[0][0], y -  binary_position[0][1], z -  binary_position[0][2]};
     Kokkos::Array<Real, 3> r2_vec = {x -  binary_position[1][0], y -  binary_position[1][1], z -  binary_position[1][2]};
     Real r1         = Kokkos::sqrt(r1_vec[0]*r1_vec[0] + r1_vec[1]*r1_vec[1] + r1_vec[2]*r1_vec[2]);
     Real r2         = Kokkos::sqrt(r2_vec[0]*r2_vec[0] + r2_vec[1]*r2_vec[1] + r2_vec[2]*r2_vec[2]);
-    Real omega1     = Kokkos::sqrt(G * m1() / (r1*r1*r1 + g_eps));
-    Real omega2     = Kokkos::sqrt(G * m2() / (r2*r2*r2 + g_eps));
+    Real omega1     = Kokkos::sqrt(g_G * m1() / (r1*r1*r1 + g_eps));
+    Real omega2     = Kokkos::sqrt(g_G * m2() / (r2*r2*r2 + g_eps));
     return omega1 + omega2;
   }
 
   // Gravitational potential of binary
   KOKKOS_INLINE_FUNCTION
   Real Potential(Real x, Real y, Real z, Kokkos::Array<Kokkos::Array<Real, 3>, 2> binary_position) const {
-    Real G          = 1.0;  // Gravitational constant in code units
     Kokkos::Array<Real, 3> r1_vec = {x - binary_position[0][0], y - binary_position[0][1], z - binary_position[0][2]};
     Kokkos::Array<Real, 3> r2_vec = {x - binary_position[1][0], y - binary_position[1][1], z - binary_position[1][2]};
-    Real phi1       = -G * m1() / Kokkos::sqrt(r1_vec[0]*r1_vec[0] + r1_vec[1]*r1_vec[1] + r1_vec[2]*r1_vec[2] + rsoft1()*rsoft1() + g_eps);
-    Real phi2       = -G * m2() / Kokkos::sqrt(r2_vec[0]*r2_vec[0] + r2_vec[1]*r2_vec[1] + r2_vec[2]*r2_vec[2] + rsoft2()*rsoft2() + g_eps);
-
+    Real phi1       = -g_G * m1() / Kokkos::sqrt(r1_vec[0]*r1_vec[0] + r1_vec[1]*r1_vec[1] + r1_vec[2]*r1_vec[2] + rsoft1()*rsoft1() + g_eps);
+    Real phi2       = -g_G * m2() / Kokkos::sqrt(r2_vec[0]*r2_vec[0] + r2_vec[1]*r2_vec[1] + r2_vec[2]*r2_vec[2] + rsoft2()*rsoft2() + g_eps);
     return phi1 + phi2;
   }
 
@@ -185,7 +183,7 @@ private:
   int _SinkType; 
 
   KOKKOS_INLINE_FUNCTION Real MeanMotion() const { return Kokkos::sqrt(TotalMass() / (_semimajoraxis*_semimajoraxis*_semimajoraxis)); }
-  KOKKOS_INLINE_FUNCTION Real Period()     const { return 2 * 3.1415926 * Kokkos::sqrt(Kokkos::pow(_semimajoraxis, 3) / TotalMass()); }
+  KOKKOS_INLINE_FUNCTION Real Period()     const { return 2 * 3.141592653589793 * Kokkos::sqrt(Kokkos::pow(_semimajoraxis, 3) / TotalMass()); }
 }; 
 
 
@@ -221,7 +219,7 @@ public:
   // initialisation functions
   KOKKOS_INLINE_FUNCTION
   Real InitialDensity_XY(Real r, Real z) const {
-    Real GM       = 1.0 * (_binary.TotalMass());      
+    Real GM       = g_G * _binary.TotalMass();      
     Real rho0     = 1.0;                           // Density normalization
     Real h2       = 1.0 / _Mach / _Mach;           // Aspect ratio H/R
     Real cs2      = h2 * GM / (r+g_eps);
@@ -234,7 +232,7 @@ public:
   Kokkos::Array<Real, 3> InitialVelocity_XY(Real x, Real y, Real z) const {
     Real r_cyl = Kokkos::sqrt(x*x + y*y);
     Real phi   = kokkos_atan2(y, x);
-    Real v_phi = Kokkos::sqrt(1.0 * _binary.TotalMass() / (r_cyl + g_eps));  // Keplerian velocity
+    Real v_phi = Kokkos::sqrt(g_G * _binary.TotalMass() / (r_cyl + g_eps));  // Keplerian velocity
     Real vx    = -v_phi * Kokkos::sin(phi);
     Real vy    =  v_phi * Kokkos::cos(phi);
     Real vz    = 0.0;   // No vertical motion
@@ -292,8 +290,8 @@ void circumbinary_source_term(Mesh *pm, const Real beta_dt_local) {
   Kokkos::Array<Kokkos::Array<Real, 3>, 2> binary_velocity = g_binary->Velocity(pm->time);
   viscous_source_term(pm, beta_dt_local, binary_position);
   binary_source_term(pm , beta_dt_local, binary_position, binary_velocity);
-  enforce_isothermal_pressure(pm);
   enforce_floors(pm);
+  enforce_isothermal_pressure(pm);
 }
 
 
@@ -745,10 +743,12 @@ void enforce_floors(Mesh *pm) {
     return;
   }
 
-  auto &indcs              = pm->mb_indcs;
-  auto &size               = pmbp->pmb->mb_size;
-  auto &w                  = pmbp->phydro->w0;
-  auto &u                  = pmbp->phydro->u0;
+  auto &indcs      = pm->mb_indcs;
+  auto &size       = pmbp->pmb->mb_size;
+  auto &w          = pmbp->phydro->w0;
+  auto &u          = pmbp->phydro->u0;
+  const Real gamma = pmbp->phydro->peos->eos_data.gamma;
+  const Real gm1   = gamma - 1.0;
 
   par_for("enforce_floors",
           DevExeSpace(),
@@ -757,33 +757,46 @@ void enforce_floors(Mesh *pm) {
           indcs.js, indcs.je,
           indcs.is, indcs.ie,
           KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-          
+    
+    bool update_cons = false;
 
-      // apply floors over Nan values
-      if ((Kokkos::isnan(w(m, IDN, k, j, i))) || Kokkos::isnan(w(m, IPR, k, j, i))) {
-          w(m, IDN, k, j, i) = g_floor_density;
-          u(m, IDN, k, j, i) = g_floor_density;
-      }
+    // Density
+    Real dens = w(m, IDN, k, j, i);
+    if (Kokkos::isnan(dens) || dens < g_floor_density) {
+      dens               = g_floor_density;
+      w(m, IDN, k, j, i) = dens;
+      w(m, IVX, k, j, i) = 0.0;
+      w(m, IVY, k, j, i) = 0.0;
+      w(m, IVZ, k, j, i) = 0.0;
+      update_cons = true;
+    }
 
-      // enfore the floors
-      bool update_cons = false;
-      if (w(m, IDN, k, j, i) < g_floor_density)  {
-        update_cons        = true;
-        w(m, IDN, k, j, i) = g_floor_density;
-        w(m, IVX, k, j, i) = 0.0;  
-        w(m, IVY, k, j, i) = 0.0;
-        w(m, IVZ, k, j, i) = 0.0;
-      }
-      if (w(m, IPR, k, j, i) < g_floor_pressure) {w(m, IPR, k, j, i) = g_floor_pressure; update_cons = true;}
+    // Pressure
+    Real pres = w(m, IPR, k, j, i);
+    if (Kokkos::isnan(pres) || pres < g_floor_pressure) {
+      pres               = g_floor_pressure;
+      w(m, IPR, k, j, i) = pres;
+      update_cons = true;
+    }
 
-      if (update_cons) {
-        u(m, IDN, k, j, i) = w(m, IDN, k, j, i);
-        u(m, IM1, k, j, i) = w(m, IVX, k, j, i) * w(m, IDN, k, j, i);
-        u(m, IM2, k, j, i) = w(m, IVY, k, j, i) * w(m, IDN, k, j, i);
-        u(m, IM3, k, j, i) = w(m, IVZ, k, j, i) * w(m, IDN, k, j, i);
-        u(m, IEN, k, j, i) = w(m, IPR, k, j, i) / (pmbp->phydro->peos->eos_data.gamma - 1.0);
-      }
-    });
+    // Check for NaNs in velocity and reset
+    if (Kokkos::isnan(w(m, IVX, k, j, i))) w(m, IVX, k, j, i) = 0.0;
+    if (Kokkos::isnan(w(m, IVY, k, j, i))) w(m, IVY, k, j, i) = 0.0;
+    if (Kokkos::isnan(w(m, IVZ, k, j, i))) w(m, IVZ, k, j, i) = 0.0;
+
+    // Update conserved variables if needed
+    if (update_cons) {
+      u(m, IDN, k, j, i) = dens;
+      u(m, IM1, k, j, i) = w(m, IVX, k, j, i) * dens;
+      u(m, IM2, k, j, i) = w(m, IVY, k, j, i) * dens;
+      u(m, IM3, k, j, i) = w(m, IVZ, k, j, i) * dens;
+      // Add kinetic energy to conservative energy
+      Real kinetic = 0.5 * dens * (w(m, IVX, k, j, i) * w(m, IVX, k, j, i)
+                                 + w(m, IVY, k, j, i) * w(m, IVY, k, j, i)
+                                 + w(m, IVZ, k, j, i) * w(m, IVZ, k, j, i));
+      u(m, IEN, k, j, i) = pres / gm1 + kinetic;
+    }
+  });
 }
 
 
