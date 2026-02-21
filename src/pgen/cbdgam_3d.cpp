@@ -28,53 +28,159 @@ struct OrbitalState {
   Real vx1, vx2;
   Real vy1, vy2;  
   Real vz1, vz2;
-  Real soft1, soft2;  
+  Real soft1, soft2;
   Real eccentricity;
   Real semimajoraxis;
 };
 
 struct cgs {
-  static constexpr Real G               = 6.6725985e-8,
-  static constexpr Real c               = 2.99792458e10,
-	static constexpr Real kb              = 1.38065812e-16,
-  static constexpr Real sigmab          = 5.6705119e-5,
-  static constexpr Real mp              = 1.6726e-24,
-  static constexpr Real kappa           = 0.4,            
-  static constexpr Real pc              = 3.085678e18,
-  static constexpr Real msun            = 1.989e33,
-  // static constexpr Real h               = 6.62607015e-27,
-  // static constexpr Real blackbodyconst1 = 1.4745e-47,
-  // static constexpr Real blackbodyconst2 = 4.79921e-11,
-  // static constexpr Real c2h3            = 2.61463e-58,
-  // static constexpr Real h_over_kb       = 4.79921e-11,
-  // static constexpr Real year            = 31556952,
-  // static constexpr Real ev              = 1.60218e-12
+  static constexpr Real G      = 6.6725985e-8;
+  static constexpr Real c      = 2.99792458e10;
+	static constexpr Real kb     = 1.38065812e-16;
+  static constexpr Real sigmab = 5.6705119e-5;
+  static constexpr Real mp     = 1.6726e-24;
+  static constexpr Real kappa  = 0.4;            
+  static constexpr Real pc     = 3.085678e18;
+  static constexpr Real msun   = 1.989e33;
 };
 
-KOKKOS_INLINE_FUNCTION
-Vector3D GetAngularMomentum(Real x, Real y, Real z, Real vx, Real vy, Real vz) {
-  // L = r x v
-  Real Lx = y*vz - z*vy;
-  Real Ly = z*vx - x*vz;
-  Real Lz = x*vy - y*vx;
-  return {Lx, Ly, Lz};
-}
 
-KOKKOS_INLINE_FUNCTION
-Vector3D GetNormalVector(Real x, Real y, Real z, Real vx, Real vy, Real vz) {
-  Vector3D L = GetAngularMomentum(x, y, z, vx, vy, vz);
-  Real L_mag = sqrt(L.x*L.x + L.y*L.y + L.z*L.z);
-  return {L.x/L_mag, L.y/L_mag, L.z/L_mag};
-}
+class ShakuraSunyaevDisk {
+public:
+  ShakuraSunyaevDisk(Real central_mass_msun, Real length_scale_pc, Real mach_number_a,
+                     Real alpha, Real gamma, Real target_accretion_rate)
+    : _central_mass_msun(central_mass_msun),
+      _length_scale_pc(length_scale_pc),
+      _mach_number_a(mach_number_a),
+      _alpha(alpha),
+      _gamma(gamma),
+      _target_accretion_rate(target_accretion_rate) {}
 
-KOKKOS_INLINE_FUNCTION
-Real CylindricalRadius(Real x, Real y, Real z, Real vx, Real vy, Real vz) {
-  Vector3D n      = GetNormalVector(x, y, z, vx, vy, vz);
-  Vector3D r_proj = {n[0] * x, n[1] * y, n[2] * z};
-  Real r_cyl      = sqrt(r_proj[0]*r_proj[0] + r_proj[1]*r_proj[1] + r_proj[2]*r_proj[2]);
-  return r_cyl;
+  // Computed properties (like Python @property)
+  Real Mass_cgs() const { return _central_mass_msun * cgs::msun; }
+  Real Length_cgs() const { return _length_scale_pc * cgs::pc; }
+  Real GM_cgs() const { return cgs::G * Mass_cgs(); }
+  Real Time_cgs() const { return sqrt(pow(Length_cgs(), 3) / GM_cgs()); }
+  Real RSchwz() const { return 2.0 * GM_cgs() / (cgs::c * cgs::c); }
+  
+  Real EddingtonRate() const {
+    Real eta = 0.1;
+    return 4.0 * M_PI * GM_cgs() / cgs::kappa / cgs::c / eta;
 }
+  
+  Real EddingtonFrac() const {
+    Real mp4_kb4 = pow(cgs::mp, 4.0) / pow(cgs::kb, 4.0);
+    Real f0 = 10.2604 * pow(mp4_kb4 * cgs::sigmab / cgs::kappa, 0.5) * pow(_gamma, -2.0);
+    return f0 * pow(_alpha, 0.5) * pow(GM_cgs(), 7.0/4.0) * pow(Length_cgs(), -1.0/4.0) 
+           * pow(_mach_number_a, -5.0) / EddingtonRate();
+  }
 
+  Real AccretionRate() const {
+    return EddingtonFrac() * EddingtonRate();
+  }
+
+  Real Mdrop() const {
+    return _target_accretion_rate / EddingtonFrac();
+  }
+
+  // vertically integrated density and pressure coefficients (in cgs)
+  Real Surface_Density() const {
+    Real s0 = 0.269274 * pow((pow(cgs::mp, 4.0) / pow(cgs::kb, 4.0) * cgs::sigmab / cgs::kappa), 0.2) * pow(_gamma, -0.8);
+    return s0 * pow(_alpha, -0.8) * pow(GM_cgs(), 0.2) * pow(AccretionRate(), 0.6) * pow(Length_cgs(), -0.6);
+  }
+
+  Real Surface_Pressure() const {
+    return 0.106103 / _gamma / _alpha * AccretionRate() * sqrt(GM_cgs()) * pow(Length_cgs(), -1.5);
+  }
+
+  Real Midplane_Temperature() const {
+    Real t0 = 0.394035 * pow(cgs::mp * cgs::kappa / cgs::kb / cgs::sigmab, 0.2) * pow(_gamma, -0.2);
+    return t0 * pow(_alpha, -0.2) * pow(GM_cgs(), 0.3) * pow(AccretionRate(), 0.4) * pow(Length_cgs(), -0.9);
+  }
+
+  // Code unit conversion coefficients
+  Real Surface_Density_Coefficient() const {
+    return Surface_Density() / (Mass_cgs() / (Length_cgs() * Length_cgs()));
+  }
+
+  Real Surface_Pressure_Coefficient() const {
+    return Surface_Pressure() / (Mass_cgs() / (Time_cgs() * Time_cgs()));
+  }
+
+  // Radial profile methods (take radius r in code units)
+  Real Surface_Density_Profile(Real r) const {
+    return Surface_Density_Coefficient() * pow(r, -0.6);  // r^(-3/5)
+  }
+
+  Real Surface_Pressure_Profile(Real r) const {
+    return Surface_Pressure_Coefficient() * pow(r, -1.5);  // r^(-3/2)
+  }
+
+  Real Mach_Profile(Real r) const {
+    Real cs = sqrt(_gamma * (Surface_Pressure_Profile(r) / Surface_Density_Profile(r)));
+    Real Omega = pow(r, -1.5);  // Keplerian angular velocity
+    Real Hs = cs / Omega;        // Scale height
+    return r / Hs;
+  }
+
+  Real Scale_Height(Real r) const {
+    Real cs = sqrt(_gamma * (Surface_Pressure_Profile(r) / Surface_Density_Profile(r)));
+    Real Omega = pow(r, -1.5);
+    return cs / Omega;
+  }
+
+  Real Optical_Depth(Real r) const {
+    return cgs::kappa * Surface_Density() * pow(r, -0.6);
+  }
+
+  Real Cooling_Coefficient() const {
+    Real mp_code = cgs::mp / Mass_cgs();
+    Real kb_code = cgs::kb / (Mass_cgs() * Length_cgs() * Length_cgs() / (Time_cgs() * Time_cgs()));
+    Real kappa_code = cgs::kappa / (Length_cgs() * Length_cgs() / Mass_cgs());
+    Real sigmab_code = cgs::sigmab / (Mass_cgs() / pow(Time_cgs(), 3.0));
+    return 8.0 / 3.0 * sigmab_code / kappa_code * pow(mp_code / kb_code, 4.0) * pow(_gamma - 1.0, 4.0);
+  }
+
+  Real Mdot_at_r(Real r) const {
+    Real cs = sqrt(_gamma * (Surface_Pressure_Profile(r) / Surface_Density_Profile(r)));
+    Real Omega = pow(r, -1.5);
+    Real Hs = cs / Omega;
+    Real nu = _alpha * cs * Hs;
+    return 3.0 * M_PI * Surface_Density_Profile(r) * nu;
+  }
+
+  Real Mdot_inf() const {
+    return Mdot_at_r(1.0);
+  }
+
+  // Code unit conversions
+  Real kb_code() const {
+    return cgs::kb / (Mass_cgs() * Length_cgs() * Length_cgs() / (Time_cgs() * Time_cgs()));
+  }
+
+  Real sigmab_code() const {
+    return cgs::sigmab / (Mass_cgs() / pow(Time_cgs(), 3.0));
+  }
+
+  Real mp_code() const {
+    return cgs::mp / Mass_cgs();
+  }
+
+  Real kappa_code() const {
+    return cgs::kappa / (Length_cgs() * Length_cgs() / Mass_cgs());
+  }
+
+private:
+  Real _central_mass_msun;
+  Real _length_scale_pc;
+  Real _mach_number_a;
+  Real _alpha;
+  Real _gamma;
+  Real _target_accretion_rate;
+}; 
+
+
+// hydro callers
 Real BinaryPotential(Real x, Real y, Real z, OrbitalState binary) {
   Real G          = 1.0;  // Gravitational constant in code units
   Vector3D r1_vec = {x - binary.x1, y - binary.y1, z - binary.z1};
@@ -85,42 +191,66 @@ Real BinaryPotential(Real x, Real y, Real z, OrbitalState binary) {
   return phi1 + phi2;
 }
 
-// locally isothermal sound speed squared (evaluated at the mindplane)
-Real MidplaneSoundSpeedSquare(Real x, Real y, Real z, OrbitalState binary, Real Mach) {
-  Real cs_sq = BinaryPotential(x, y, z, binary) / (Mach * Mach);
-  return cs_sq;
+Real BinaryOmega(Real x, Real y, Real z, OrbitalState binary) {
+  Real G          = 1.0;  // Gravitational constant in code units
+  Vector3D r1_vec = {x - binary.x1, y - binary.y1, z - binary.z1};
+  Vector3D r2_vec = {x - binary.x2, y - binary.y2, z - binary.z2};
+  Real r1         = sqrt(r1_vec[0]*r1_vec[0] + r1_vec[1]*r1_vec[1] + r1_vec[2]*r1_vec[2]);
+  Real r2         = sqrt(r2_vec[0]*r2_vec[0] + r2_vec[1]*r2_vec[1] + r2_vec[2]*r2_vec[2]);
+  Real omega1     = sqrt(G * binary.m1 / (r1*r1*r1));
+  Real omega2     = sqrt(G * binary.m2 / (r2*r2*r2));
+  return omega1 + omega2;  
 }
 
-KOKKOS_INLINE_FUNCTION
-Real VerticalFactor(Real d_perp, Real r_cyl, Real Mach) {
-  Real h = 1.0 / Mach; 
-  Real H = h * r_cyl;
-  return exp(-0.5*SQR(d_perp/H));
+Real SoundSpeedSquare(Real x, Real y, Real z, OrbitalState binary, Real Mach) {
+  Real cs2 = BinaryPotential(x, y, z, binary) / (Mach * Mach);
+  return cs2;
 }
 
-// KOKKOS_INLINE_FUNCTION
-// Real GetRadialDensity(Real r_cyl, Real rin, Real rout, Real rho_a, Real powerlaw) {  
-//   Real rho = 0.0;  // vacuum outside disk
-//   if (r_cyl >= rin && r_cyl <= rout) {
-//     rho = rho_a * pow(r_cyl, powerlaw);
-//   }
-//   return rho;
-// }
-
-
-// Write function for density that takes angle and then gives initial density
-Real InitialDensityProfile(Real r, Real d_perp, real Mach) {
-  // 2D Shakura Sunyaev density profile
-  
-  // 2D density profile
-  // Write rho_midplane = Sigma / H
-  // Write vertical factor
-  // Return rho_midplane * vertical_factor
-  return rho;
+Real Viscosity(Real x, Real y, Real z, OrbitalState binary, Real alpha, Real Mach) {
+  Real cs    = sqrt(SoundSpeedSquare(x, y, z, binary, Mach));
+  Real H     = cs / BinaryOmega(x, y, z, binary);  // Scale height H = cs / Omega
+  return alpha * cs * H;
 }
 
+// initialisation functions
+Real InitialDensity_XY(Real r, Real z, Real Mach, OrbitalState binary) {
+  Real GM       = 1.0 * (binary.m1 + binary.m2);      
+  Real rho0     = 1.0;                           // Density normalization
+  Real h2       = 1.0 / Mach / Mach;             // Aspect ratio H/R
+  Real cs2      = h2 * GM / r;
+  Real vertical = exp((1/h2) * (1/sqrt(1.0 + z*z/r/r) - 1.0));  
+  Real cavity   = (r > 2.5) ? 1.0 : 0.000001;    // Cavity inside binary (r < 2.5)
+  return rho0 * pow(r, -1.5) * vertical * cavity;
+}
+
+Real InitialDensity(Real x, Real y, Real z, Real theta, OrbitalState binary, Real Mach) {
+  Real r     = sqrt(x*x + y*y + z*z);
+  Real r_cyl = r * cos(theta);
+  Real z_cyl = r * sin(theta);
+  return InitialDensity_XY(r_cyl, z_cyl, Mach, binary);
+}
+
+Real InitialPressure(Real x, Real y, Real z, Real theta, OrbitalState binary, Real Mach) {
+  Real rho = InitialDensity(x, y, z, theta, binary, Mach);
+  Real cs2 = SoundSpeedSquare(x, y, z, binary, Mach);
+  return rho * cs2;
+}
+
+// binary motion and source terms
 
 
+
+
+
+
+
+
+
+
+
+
+// write binary force and accretion 
 
 
 //----------------------------------------------------------------------------------------
@@ -132,27 +262,20 @@ void ProblemGenerator::CircumbinaryDisk(ParameterInput *pin, const bool restart)
 
   // ========== READ PARAMETERS FROM <problem> BLOCK ==========
   // Binary parameters
-  Real a_binary = pin->GetOrAddReal("problem", "a_binary", 1.0);
-  Real q_mass   = pin->GetOrAddReal("problem", "q_mass"  , 1.0);
-  Real m_total  = pin->GetOrAddReal("problem", "m_total" , 1.0);
+  //Real a_binary = pin->GetOrAddReal("problem", "a_binary", 1.0);
+  Real q_mass       = pin->GetOrAddReal("problem", "q_mass"  , 1.0);
+  Real r_soft       = pin->GetOrAddReal("problem", "r_smooth", 0.1);
+  Real eccentricity = pin->GetOrAddReal("problem", "eccentricity", 0.0);
+  //Real m_total  = pin->GetOrAddReal("problem", "m_total" , 1.0);
 
   // Disk parameters
-  Real rin      = pin->GetOrAddReal("problem", "rin"          , 0.5);
-  Real rout     = pin->GetOrAddReal("problem", "rout"         , 10.0);
-  Real h        = pin->GetOrAddReal("problem", "h"            , 0.1);
-  //Real rho_disk = pin->GetOrAddReal("problem", "rho_disk", 1.0);
-  Real rho_a    = pin->GetOrAddReal("problem", "rho_amb"      , 1.0);
-  Real powerlaw = pin->GetOrAddReal("problem", "powerlaw"     , -1.5);  // rho ~ r^-alpha
-
-  // Disk dynamics
-  Real cs_sq              = pin->GetOrAddReal("problem", "cs_sq", 0.01);  // Sound speed squared
-  Real v_radial_accretion = pin->GetOrAddReal("problem", "v_radial", 0.0);
-
-  // Cavity/cutoff inside binary
-  Real r_cavity = pin->GetOrAddReal("problem", "r_cavity", 0.5);
+  Real rout     = pin->GetOrAddReal("problem", "rout"    , 10.0);
+  Real Mach     = pin->GetOrAddReal("problem", "Mach"    , 10.0);
 
   // Smoothing scale for Keplerian velocity (avoids singularity at center)
-  Real r_smooth = pin->GetOrAddReal("problem", "r_smooth", 0.1);
+  
+  Real alpha    = pin->GetOrAddReal("problem", "alpha"   , 0.01);
+
 
   // ========== GET MESH AND PHYSICS OBJECTS ==========
   auto &indcs = pmy_mesh_->mb_indcs;
